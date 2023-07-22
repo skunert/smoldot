@@ -288,14 +288,17 @@ impl<T> NonFinalizedTree<T> {
                         ..
                     },
                     None,
-                ) if next_epoch_transition.start_slot_number.is_some() => (
-                    parent_best_score.num_primary_slots + if is_primary_slot { 1 } else { 0 },
-                    parent_best_score.num_secondary_slots + if is_primary_slot { 0 } else { 1 },
-                    BlockConsensus::Babe {
-                        current_epoch: Some(next_epoch_transition),
-                        next_epoch: Arc::new(epoch_transition_target),
-                    },
-                ),
+                ) if next_epoch_transition.start_slot_number.is_some() => {
+                    log::info!("Transitioning to next epoch!");
+                    (
+                        parent_best_score.num_primary_slots + if is_primary_slot { 1 } else { 0 },
+                        parent_best_score.num_secondary_slots + if is_primary_slot { 0 } else { 1 },
+                        BlockConsensus::Babe {
+                            current_epoch: Some(next_epoch_transition),
+                            next_epoch: Arc::new(epoch_transition_target),
+                        },
+                    )
+                }
 
                 // Babe epoch transition to first epoch.
                 // Should only ever happen when the verified block is block 1.

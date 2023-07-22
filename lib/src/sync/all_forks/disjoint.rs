@@ -130,6 +130,11 @@ impl<TBl> DisjointBlocks<TBl> {
                 Some(mem::replace(&mut entry.user_data, user_data))
             }
             Entry::Vacant(entry) => {
+                log::info!(
+                    "Inserting block parent_hash = {:?} is_bad = {}",
+                    parent_hash,
+                    parent_is_bad,
+                );
                 entry.insert(Block {
                     parent_hash,
                     bad: parent_is_bad,

@@ -664,6 +664,7 @@ async fn run<TPlat: PlatformRef>(mut task: Task<TPlat>) {
                 new_heads_and_runtime_subscriptions_stale,
                 ..
             } => {
+                log::info!("What what getting called on non-finalized block");
                 let json_rpc_header = match methods::Header::from_scale_encoded_header(
                     &block.scale_encoded_header,
                     task.runtime_service.block_number_bytes(),
@@ -700,7 +701,9 @@ async fn run<TPlat: PlatformRef>(mut task: Task<TPlat>) {
                 );
                 debug_assert!(_was_in.is_none());
 
+                log::info!("Will send a new import notification now! num_all_head_subscriptions = {}, number = {}, parent_hash = {:?}", task.all_heads_subscriptions.len(), json_rpc_header.number, json_rpc_header.parent_hash);
                 for (subscription_id, subscription) in &mut task.all_heads_subscriptions {
+                    log::info!("Sending all_head");
                     subscription
                         .send_notification(methods::ServerToClient::chain_allHead {
                             subscription: subscription_id.as_str().into(),

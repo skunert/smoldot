@@ -276,19 +276,11 @@ pub fn verify_header(config: VerifyConfig) -> Result<VerifySuccess, VerifyError>
 
     // Verify consistency of the configuration.
     if let Some(curr) = &config.parent_block_epoch {
-        assert_eq!(
-            curr.epoch_index.checked_add(1).unwrap(),
-            config.parent_block_next_epoch.epoch_index
-        );
         assert!(curr.start_slot_number.is_some());
         assert!(curr.start_slot_number <= parent_slot_number);
     } else {
         assert_eq!(config.parent_block_next_epoch.epoch_index, 0);
     }
-    assert!(config
-        .parent_block_next_epoch
-        .start_slot_number
-        .map_or(true, |n| n > parent_slot_number.unwrap()));
     assert_eq!(
         config.parent_block_next_epoch.epoch_index == 0,
         config.parent_block_next_epoch.start_slot_number.is_none()
@@ -349,38 +341,76 @@ pub fn verify_header(config: VerifyConfig) -> Result<VerifySuccess, VerifyError>
         None => return Err(VerifyError::MissingSeal),
     };
 
+    let slots_per_epoch = config.slots_per_epoch.clone();
+    let current_epoch = block_epoch_info.epoch_index;
     // If the block contains an epoch transition, build the information about the new epoch.
     // This is done now, as the header is consumed below.
     let epoch_transition_target = match config.header.digest.babe_epoch_information() {
         None => None,
-        Some((info, None)) => Some(chain_information::BabeEpochInformation {
-            epoch_index: block_epoch_info.epoch_index.checked_add(1).unwrap(),
-            start_slot_number: Some(
-                block_epoch_info
-                    .start_slot_number
-                    .unwrap_or(slot_number)
-                    .checked_add(config.slots_per_epoch.get())
-                    .unwrap(),
-            ),
-            authorities: info.authorities.map(Into::into).collect(),
-            randomness: *info.randomness,
-            c: block_epoch_info.c,
-            allowed_slots: block_epoch_info.allowed_slots,
-        }),
-        Some((info, Some(epoch_cfg))) => Some(chain_information::BabeEpochInformation {
-            epoch_index: block_epoch_info.epoch_index.checked_add(1).unwrap(),
-            start_slot_number: Some(
-                block_epoch_info
-                    .start_slot_number
-                    .unwrap_or(slot_number)
-                    .checked_add(config.slots_per_epoch.get())
-                    .unwrap(),
-            ),
-            authorities: info.authorities.map(Into::into).collect(),
-            randomness: *info.randomness,
-            c: epoch_cfg.c,
-            allowed_slots: epoch_cfg.allowed_slots,
-        }),
+        Some((info, None)) => {
+            let mut next_epoch_index = block_epoch_info.epoch_index.checked_add(1).unwrap();
+            let mut new_start_slot = block_epoch_info
+                .start_slot_number
+                .unwrap_or(slot_number)
+                .checked_add(config.slots_per_epoch.get())
+                .unwrap();
+            if let Some(start_slot) = block_epoch_info.start_slot_number {
+                let end_slot = start_slot + slots_per_epoch.get();
+                if end_slot < slot_number {
+                    let skipped_epochs =
+                        slot_number.saturating_sub(start_slot) / slots_per_epoch.get();
+                    next_epoch_index = block_epoch_info.epoch_index + skipped_epochs;
+                    new_start_slot = skipped_epochs
+                        .checked_mul(slots_per_epoch.into())
+                        .and_then(|skipped_slots| start_slot.checked_add(skipped_slots))
+                        .expect(
+                            "slot number is u64; it should relate in some way to wall clock time; \
+				 if u64 is not enough we should crash for safety; qed.",
+                        );
+                    log::info!("Setting next_epoch_index: {next_epoch_index} new_start_slot: {new_start_slot}");
+                }
+            }
+            Some(chain_information::BabeEpochInformation {
+                epoch_index: next_epoch_index,
+                start_slot_number: Some(new_start_slot),
+                authorities: info.authorities.map(Into::into).collect(),
+                randomness: *info.randomness,
+                c: block_epoch_info.c,
+                allowed_slots: block_epoch_info.allowed_slots,
+            })
+        }
+        Some((info, Some(epoch_cfg))) => {
+            let mut next_epoch_index = block_epoch_info.epoch_index.checked_add(1).unwrap();
+            let mut new_start_slot = block_epoch_info
+                .start_slot_number
+                .unwrap_or(slot_number)
+                .checked_add(config.slots_per_epoch.get())
+                .unwrap();
+            if let Some(start_slot) = block_epoch_info.start_slot_number {
+                let end_slot = start_slot + slots_per_epoch.get();
+                if end_slot < slot_number {
+                    let skipped_epochs =
+                        slot_number.saturating_sub(start_slot) / slots_per_epoch.get();
+                    next_epoch_index = block_epoch_info.epoch_index + skipped_epochs;
+                    new_start_slot = skipped_epochs
+                        .checked_mul(slots_per_epoch.into())
+                        .and_then(|skipped_slots| start_slot.checked_add(skipped_slots))
+                        .expect(
+                            "slot number is u64; it should relate in some way to wall clock time; \
+				 if u64 is not enough we should crash for safety; qed.",
+                        );
+                    log::info!("Setting next_epoch_index: {next_epoch_index} new_start_slot: {new_start_slot}");
+                }
+            }
+            Some(chain_information::BabeEpochInformation {
+                epoch_index: next_epoch_index,
+                start_slot_number: Some(new_start_slot),
+                authorities: info.authorities.map(Into::into).collect(),
+                randomness: *info.randomness,
+                c: epoch_cfg.c,
+                allowed_slots: epoch_cfg.allowed_slots,
+            })
+        }
     };
 
     // Make sure that the header wouldn't put Babe in a non-sensical state.
@@ -390,6 +420,7 @@ pub fn verify_header(config: VerifyConfig) -> Result<VerifySuccess, VerifyError>
         }
     }
 
+    let header_to_verify_number = config.header.number;
     // The signature in the seal applies to the header from where the signature isn't present.
     // Build the hash that is expected to be signed.
     // The signature cannot be verified yet, as the public key of the signer isn't known.
@@ -423,10 +454,29 @@ pub fn verify_header(config: VerifyConfig) -> Result<VerifySuccess, VerifyError>
     if let Some((vrf_output, vrf_proof)) = vrf_output_and_proof {
         // In order to verify the VRF output, we first need to create a transcript containing all
         // the data to verify the VRF against.
+        let mut epoch_index = block_epoch_info.epoch_index;
+
+        log::info!(
+            "Verification with transcript block number: {header_to_verify_number}, slot_number: {}, epoch_index: {}, randomness {:?}, epoch_target: {:?}",
+            &slot_number,
+            epoch_index,
+            &block_epoch_info.randomness[..],
+            epoch_transition_target
+        );
+
+        if let Some(start_slot) = block_epoch_info.start_slot_number {
+            let end_slot = start_slot + slots_per_epoch.get();
+            if end_slot < slot_number {
+                let skipped_epochs = slot_number.saturating_sub(start_slot) / slots_per_epoch.get();
+                log::info!("ALARM, end slot < slot_number, epoch skipped recalculated {epoch_index} -> {}.", epoch_index + skipped_epochs);
+                epoch_index = epoch_index + skipped_epochs;
+            }
+        }
+
         let transcript = {
             let mut transcript = merlin::Transcript::new(&b"BABE"[..]);
             transcript.append_u64(b"slot number", slot_number);
-            transcript.append_u64(b"current epoch", block_epoch_info.epoch_index);
+            transcript.append_u64(b"current epoch", epoch_index);
             transcript.append_message(b"chain randomness", &block_epoch_info.randomness[..]);
             transcript
         };
@@ -438,7 +488,13 @@ pub fn verify_header(config: VerifyConfig) -> Result<VerifySuccess, VerifyError>
 
         let (vrf_in_out, _) = signing_public_key
             .vrf_verify(transcript, &vrf_output, &vrf_proof)
-            .map_err(|_| VerifyError::BadVrfProof)?;
+            .map_err(|e| {
+                log::info!(
+                    "VRF messed up header_num: {header_to_verify_number} {}",
+                    e.to_string()
+                );
+                VerifyError::BadVrfProof
+            })?;
 
         // If this is a primary slot claim, we need to make sure that the VRF output is below
         // a certain threshold, otherwise all the authorities could claim all the slots.

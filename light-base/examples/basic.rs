@@ -43,7 +43,7 @@ fn main() {
             // The most important field of the configuration is the chain specification. This is a
             // JSON document containing all the information necessary for the client to connect to said
             // chain.
-            specification: include_str!("../../demo-chain-specs/polkadot.json"),
+            specification: include_str!("/tmp/zombie-3e8887636ea82b625492c1623cb5e8a7_-544032-BrYTcUnM21tI/rococo-local.json"),
 
             // Configures some constants about the JSON-RPC endpoints.
             // It is also possible to pass `Disabled`, in which case the chain will not be able to
